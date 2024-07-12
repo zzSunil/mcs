@@ -11,7 +11,7 @@
 #include <mica/mica.h>
 #include <rpmsg/rpmsg_service.h>
 #include <remoteproc/mica_rsc.h>
-
+#include <patch/strlcpy.h>
 static METAL_DECLARE_LIST(remote_ept_list);
 
 struct remote_ept {

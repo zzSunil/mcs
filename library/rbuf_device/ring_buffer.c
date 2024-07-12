@@ -47,6 +47,10 @@ int ring_buffer_pair_init(void *rxaddr, void *txaddr, int len)
  * or to ring buffer
  */
 #define wmb()       dsb(st)
+#elif __riscv
+#define wmb()    __asm__ __volatile__("fence w, w":::"memory")
+#define rmb()    __asm__ __volatile__("fence r, r":::"memory")
+#define mb()     __asm__ __volatile__("fence rw, rw":::"memory")
 #else
 #error  "unsupported arch"
 #endif

@@ -20,6 +20,7 @@
 #include <memory/shm_pool.h>
 #include <remoteproc/remoteproc_module.h>
 #include <remoteproc/mica_rsc.h>
+#include <patch/strlcpy.h>
 
 struct cpu_info {
 	uint32_t cpu;
@@ -87,7 +88,7 @@ static void *rproc_wait_event(void *arg)
 			syslog(LOG_ERR, "%s failed: %s\n", __func__, strerror(errno));
 			break;
 		}
-
+		DEBUG_PRINT("User Space Notifier get!!! for baremetal\n");
 		if (fds[0].revents & POLLIN)
 			rproc_notify_all();
 	}
@@ -144,7 +145,7 @@ static struct remoteproc *rproc_init(struct remoteproc *rproc,
 		syslog(LOG_ERR, "open %s device failed, err %d\n", MCS_DEVICE_NAME, mcs_fd);
 		return NULL;
 	}
-
+	DEBUG_PRINT("baremetal rproc_init open /dev/mcs success! and going to register notifier in user space\n");
 	/* set up the notification waiter */
 	ret = rproc_register_notifier();
 	if (ret) {

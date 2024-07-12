@@ -19,7 +19,7 @@ int mica_create(struct mica_client *client)
 	ret = create_client(client);
 	if (ret)
 		syslog(LOG_ERR, "create remoteproc failed, err: %d\n", ret);
-
+	DEBUG_PRINT("mica create success!! %s\n", client->path);
 	return ret;
 }
 
@@ -32,7 +32,7 @@ int mica_start(struct mica_client *client)
 		syslog(LOG_ERR, "load client image failed, err: %d\n", ret);
 		return ret;
 	}
-
+	DEBUG_PRINT("mica load_client_image success! %s \n", client->path);
 	ret = start_client(client);
 	if (ret) {
 		syslog(LOG_ERR, "start client OS failed, err: %d\n", ret);

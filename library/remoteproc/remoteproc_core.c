@@ -109,20 +109,26 @@ int create_client(struct mica_client *client)
 	const struct remoteproc_ops *ops;
 
 	if (client->ped == BARE_METAL)
+	{
+		DEBUG_PRINT("create_client register a baremetal ops!\n");
 		ops = &rproc_bare_metal_ops;
+	}
 	else if (client->ped == JAILHOUSE)
 		ops = &rproc_jailhouse_ops;
 	else
 		return -EINVAL;
-
+	
+	DEBUG_PRINT("create client going to call remoteproc_init for baremetal ops!\n");
 	rproc = remoteproc_init(&client->rproc, ops, client);
 	if (!rproc) {
 		syslog(LOG_ERR, "remoteproc init failed\n");
 		return -EINVAL;
 	}
-
+	DEBUG_PRINT("create client call remoteproc_init for baremetal ops success!!\n");
+	
 	metal_list_add_tail(&g_client_list, &client->node);
 	metal_list_init(&client->services);
+	DEBUG_PRINT("create client add to g_client_list success! and init service list success!\n");
 	return 0;
 }
 

@@ -20,7 +20,7 @@
 #include <memory/shm_pool.h>
 #include <remoteproc/remoteproc_module.h>
 #include <remoteproc/mica_rsc.h>
-
+#include <patch/strlcpy.h>
 /* Need to keep consistent with definition in jailhouse/cell-config.h */
 #define JAILHOUSE_CELL_NAME_MAXLEN	31
 #define JAILHOUSE_CONFIG_REVISION	13

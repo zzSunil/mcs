@@ -12,7 +12,7 @@
 #include <rpmsg/rpmsg_service.h>
 
 #include <syslog.h>
-
+#include <patch/strlcpy.h>
 int handle_mica_rsc(struct remoteproc *rproc, void *rsc, size_t len)
 {
 	int i;

@@ -10,7 +10,7 @@
 #include <syslog.h>
 #include <openamp/remoteproc.h>
 #include <openamp/rpmsg_virtio.h>
-
+#include <patch/strlcpy.h>
 #if defined __cplusplus
 extern "C" {
 #endif
@@ -18,7 +18,7 @@ extern "C" {
 #define MAX_FIRMWARE_PATH_LEN	128
 
 #ifdef DEBUG
-#define DEBUG_PRINT(fmt, args...) do { syslog(LOG_DEBUG, "DEBUG: %s:%d:%s(): " fmt, \
+#define DEBUG_PRINT(fmt, args...) do { syslog(LOG_INFO, "DEBUG: %s:%d:%s(): " fmt, \
 				      __FILE_NAME__, __LINE__, __func__, ##args); } while (0)
 #else
 #define DEBUG_PRINT(fmt, ...) do { } while (0)
