@@ -22,6 +22,7 @@
 #include <linux/of_irq.h>
 #include <linux/version.h>
 #include <linux/kprobes.h>
+#include <asm/sbi.h>
 
 #define MCS_DEVICE_NAME		"mcs"
 
@@ -38,9 +39,18 @@
 #define IOC_CPUON		_IOW(MAGIC_NUMBER, 1, int)
 #define IOC_AFFINITY_INFO	_IOW(MAGIC_NUMBER, 2, int)
 #define IOC_QUERY_MEM		_IOW(MAGIC_NUMBER, 3, int)
-#define IOC_MAXNR		3
+#define IOC_GET_COPY_MSG_MEM    _IOWR(MAGIC_NUMBER, 4, struct core_msg_mem_info)
+#define IOC_MAXNR		4
+#ifdef __riscv
+#define IPI_MCS			10
+#else
 #define IPI_MCS			8
+#endif
 #define RPROC_MEM_MAX		4
+
+#define INSTANCE_SIZE  0x2400000       /*实例大小36M*/
+#define OPENAMP_SHM_SIZE  0x1000000
+#define OPENAMP_SHM_COPY_SIZE 0x100000
 
 static struct class *mcs_class;
 static int mcs_major;
@@ -52,7 +62,18 @@ struct cpu_info {
 	u64 boot_addr;
 };
 
+
+struct core_msg_mem_info {
+	unsigned int instance_id; /* 当前不支持多实例，使用时赋值为0；支持多实例以后修改成具体实例号 */
+	unsigned long phy_addr;
+	void *vir_addr;
+	size_t size;
+	size_t align_size;
+};
+
+#ifdef __aarch64__
 static int invoke_hvc = 1;
+#endif
 /**
  * struct mcs_rproc_mem - internal memory structure
  * @phy_addr: physical address of the memory region
@@ -94,6 +115,8 @@ static atomic_t irq_ack;
  *	INVALID_PARAMETERS 	-2
  *	DISABLED		-8
  */
+
+#ifdef __aarch64__
 static unsigned long invoke_psci_fn(unsigned long function_id,
 			unsigned long arg0, unsigned long arg1,
 			unsigned long arg2)
@@ -141,6 +164,47 @@ static u64 get_cpu_mpidr(u32 cpu)
 	return INVALID_HWID;
 }
 
+
+static int get_psci_method(void)
+{
+	const char *method;
+	struct device_node *np;
+	struct of_device_id psci_of_match[] = {
+		{ .compatible = "arm,psci" },
+		{ .compatible = "arm,psci-0.2" },
+		{ .compatible = "arm,psci-1.0" },
+		{},
+	};
+
+	if (!acpi_disabled) {
+		/* For ACPI, only "smc" is supported */
+		invoke_hvc = 0;
+		return 0;
+	}
+
+	np = of_find_matching_node(NULL, psci_of_match);
+
+	if (!np || !of_device_is_available(np))
+		return -ENODEV;
+
+	if (of_property_read_string(np, "method", &method)) {
+		of_node_put(np);
+		return -ENXIO;
+	}
+
+	of_node_put(np);
+
+	if (!strcmp("hvc", method))
+		invoke_hvc = 1;
+	else if (!strcmp("smc", method))
+		invoke_hvc = 0;
+	else
+		return -EINVAL;
+
+	return 0;
+}
+#endif
+
 static irqreturn_t handle_clientos_ipi(int irq, void *data)
 {
 	pr_info("received ipi from client os\n");
@@ -171,7 +235,7 @@ static int init_mcs_ipi(void)
 	int err;
 	struct irq_desc *desc;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
 	desc = irq_data_to_desc(irq_get_irq_data(IPI_MCS));
 #else
 	desc = irq_to_desc(IPI_MCS);
@@ -187,6 +251,7 @@ static int init_mcs_ipi(void)
 
 	err = request_percpu_irq(IPI_MCS, handle_clientos_ipi, "MCS IPI", mcs_evt);
 	if (err) {
+		pr_err("can't request percpu irq %d\n", IPI_MCS);
 		free_percpu(mcs_evt);
 		return err;
 	}
@@ -211,21 +276,52 @@ static unsigned int mcs_poll(struct file *file, poll_table *wait)
 	return mask;
 }
 
+
+#ifdef __riscv
+static inline int riscv_hart_start(unsigned long hartid, unsigned long start_addr)
+{
+	unsigned long priv = 0;
+	struct sbiret ret = sbi_ecall(SBI_EXT_HSM, SBI_EXT_HSM_HART_START,
+		hartid, start_addr, priv, 0, 0, 0);
+	return ret.error;
+}
+
+static inline int riscv_hart_status(unsigned long hartid)
+{
+	struct sbiret ret = sbi_ecall(SBI_EXT_HSM, SBI_EXT_HSM_HART_STATUS,
+		hartid, 0, 0, 0, 0, 0);
+	return ret.value;
+}
+#endif
+
 static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
-	int ret;
+	int ret = 0;
+#ifdef __aarch64__
 	u64 mpidr;
+#else
+	u64 hart_id;
+#endif
 	struct cpu_info info;
+	struct core_msg_mem_info copy_mem_info;
 
 	if (_IOC_TYPE(cmd) != MAGIC_NUMBER)
 		return -EINVAL;
 	if (_IOC_NR(cmd) > IOC_MAXNR)
 		return -EINVAL;
-	if (cmd != IOC_QUERY_MEM) {
+
+	switch (cmd) {
+	case IOC_GET_COPY_MSG_MEM:
+		ret = copy_from_user(&copy_mem_info, (struct core_msg_mem_info __user *)arg, sizeof(copy_mem_info));
+		break;
+	case IOC_QUERY_MEM:
+		break;
+	default:
 		ret = copy_from_user(&info, (struct cpu_info __user *)arg, sizeof(info));
-		if (ret)
-			return -EFAULT;
+		break;
 	}
+	if (ret)
+		return -EFAULT;
 
 	switch (cmd) {
 	case IOC_SENDIPI:
@@ -234,14 +330,24 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		break;
 
 	case IOC_CPUON:
+#ifdef __riscv
+		hart_id = info.cpu;
+		if (hart_id == INVALID_HARTID){
+#else
 		mpidr = get_cpu_mpidr(info.cpu);
-		if (mpidr == INVALID_HWID) {
+		if (mpidr == INVALID_HWID
+#endif
 			pr_err("boot clientos failed, invalid MPIDR\n");
 			return -EINVAL;
 		}
-		pr_info("start booting clientos on cpu%d(%llx) addr(0x%llx)\n", info.cpu, mpidr, info.boot_addr);
 
+#ifdef __riscv
+		pr_info("start booting clientos on cpu%d(%llx) addr(0x%llx)\n", info.cpu, hart_id, info.boot_addr);
+		ret = riscv_hart_start(hart_id, info.boot_addr);
+#else
+		pr_info("start booting clientos on cpu%d(%llx) addr(0x%llx)\n", info.cpu, mpidr, info.boot_addr);
 		ret = invoke_psci_fn(CPU_ON_FUNCID, mpidr, info.boot_addr, 0);
+#endif
 		if (ret) {
 			pr_err("boot clientos failed(%d)\n", ret);
 			return -EINVAL;
@@ -249,13 +355,22 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		break;
 
 	case IOC_AFFINITY_INFO:
+#ifdef __riscv
+		hart_id = info.cpu;
+		if (hart_id == INVALID_HARTID){
+#else
 		mpidr = get_cpu_mpidr(info.cpu);
 		if (mpidr == INVALID_HWID) {
+#endif
 			pr_err("cpu state check failed! Invalid MPIDR\n");
 			return -EINVAL;
 		}
 
+#ifdef __riscv
+		ret = riscv_hart_status(hart_id);
+#else
 		ret = invoke_psci_fn(AFFINITY_INFO_FUNCID, mpidr, 0, 0);
+#endif
 		if (ret != 1) {
 			pr_err("cpu state check failed! cpu(%d) is not in the OFF state, current state: %d\n",
 				info.cpu, ret);
@@ -265,6 +380,21 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 
 	case IOC_QUERY_MEM:
 		if (copy_to_user((void __user *)arg, &mem[0], sizeof(mem[0])))
+			return -EFAULT;
+		break;
+
+	case IOC_GET_COPY_MSG_MEM:
+	    if (copy_mem_info.instance_id > RPROC_MEM_MAX) {
+                        pr_err("GET_COPY_MSG_MEM failed: The required instance_id max to %d, your instance_id:%d\n", RPROC_MEM_MAX, copy_mem_info.instance_id);
+                        return -EINVAL;
+        }
+		copy_mem_info.phy_addr = mem[0].phy_addr + copy_mem_info.instance_id * INSTANCE_SIZE + OPENAMP_SHM_SIZE - OPENAMP_SHM_COPY_SIZE * 3;  /* 使用2M。 1M 用来发送， 1M用来接收 尾部1M gap */
+	    if (copy_mem_info.phy_addr  > (mem[0].phy_addr + mem[0].size)) {
+			pr_err("GET_COPY_MSG_MEM failed: The required memory is out of mcs reserved memory, instance_id:%d\n", copy_mem_info.instance_id);
+			return -EINVAL;
+		}
+		copy_mem_info.size = OPENAMP_SHM_COPY_SIZE * 2;  /* 使用2M。1M 用来发送， 1M用来接收 */
+		if (copy_to_user((void __user *)arg, &copy_mem_info, sizeof(copy_mem_info)))
 			return -EFAULT;
 		break;
 
@@ -278,7 +408,12 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 static pgprot_t mcs_phys_mem_access_prot(struct file *file, unsigned long pfn,
 					 unsigned long size, pgprot_t vma_prot)
 {
-	return __pgprot_modify(vma_prot, PTE_ATTRINDX_MASK, PTE_ATTRINDX(MT_NORMAL_NC) | PTE_PXN | PTE_UXN);
+#ifdef __riscv
+	pgprot_t prot =  pgprot_noncached(vma_prot);
+#else
+	pgprot_t prot = __pgprot_modify(vma_prot, PTE_ATTRINDX_MASK, PTE_ATTRINDX(MT_NORMAL_NC) | PTE_PXN | PTE_UXN);
+#endif
+	return prot;
 }
 
 static const struct vm_operations_struct mmap_mem_ops = {
@@ -347,45 +482,6 @@ static const struct file_operations mcs_fops = {
 	.compat_ioctl = compat_ptr_ioctl,
 	.llseek = generic_file_llseek,
 };
-
-static int get_psci_method(void)
-{
-	const char *method;
-	struct device_node *np;
-	struct of_device_id psci_of_match[] = {
-		{ .compatible = "arm,psci" },
-		{ .compatible = "arm,psci-0.2" },
-		{ .compatible = "arm,psci-1.0" },
-		{},
-	};
-
-	if (!acpi_disabled) {
-		/* For ACPI, only "smc" is supported */
-		invoke_hvc = 0;
-		return 0;
-	}
-
-	np = of_find_matching_node(NULL, psci_of_match);
-
-	if (!np || !of_device_is_available(np))
-		return -ENODEV;
-
-	if (of_property_read_string(np, "method", &method)) {
-		of_node_put(np);
-		return -ENXIO;
-	}
-
-	of_node_put(np);
-
-	if (!strcmp("hvc", method))
-		invoke_hvc = 1;
-	else if (!strcmp("smc", method))
-		invoke_hvc = 0;
-	else
-		return -EINVAL;
-
-	return 0;
-}
 
 static int init_reserved_mem(void)
 {
@@ -467,7 +563,7 @@ static int register_mcs_dev(void)
 		goto err;
 	}
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)
 	mcs_class = class_create(MCS_DEVICE_NAME);
 #else
 	mcs_class = class_create(THIS_MODULE, MCS_DEVICE_NAME);
@@ -506,6 +602,7 @@ static int __init mcs_dev_init(void)
 {
 	int ret;
 
+#ifdef __aarch64__
 	ret = get_psci_method();
 	if (ret) {
 		pr_err("Failed to get psci \"method\" property, ret = %d\n", ret);
@@ -517,6 +614,7 @@ static int __init mcs_dev_init(void)
 		pr_err("Failed to get cpu_logical_map symbol, ret = %d\n", ret);
 		return ret;
 	}
+#endif
 
 	ret = init_reserved_mem();
 	if (ret) {
