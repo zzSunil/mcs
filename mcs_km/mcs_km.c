@@ -23,6 +23,9 @@
 #include <linux/version.h>
 #include <linux/kprobes.h>
 #include <asm/sbi.h>
+#ifdef MILKVDUO
+#include "mcs_cmdqu/rtos_cmdqu.h"
+#endif
 
 #define MCS_DEVICE_NAME		"mcs"
 
@@ -55,7 +58,9 @@
 static struct class *mcs_class;
 static int mcs_major;
 
+#ifndef MILKVDUO
 static int __percpu *mcs_evt;
+#endif
 
 struct cpu_info {
 	u32 cpu;
@@ -71,9 +76,6 @@ struct core_msg_mem_info {
 	size_t align_size;
 };
 
-#ifdef __aarch64__
-static int invoke_hvc = 1;
-#endif
 /**
  * struct mcs_rproc_mem - internal memory structure
  * @phy_addr: physical address of the memory region
@@ -203,15 +205,87 @@ static int get_psci_method(void)
 
 	return 0;
 }
+
+static void send_clientos_ipi(const struct cpumask *target)
+{
+	ipi_send_mask(IPI_MCS, target);
+}
 #endif
 
-static irqreturn_t handle_clientos_ipi(int irq, void *data)
+#ifdef __riscv
+static inline int riscv_hart_start(unsigned long hartid, unsigned long start_addr)
 {
-	pr_info("received ipi from client os\n");
-	atomic_set(&irq_ack, 1);
-	wake_up_interruptible(&mcs_wait_queue);
-	return IRQ_HANDLED;
+	unsigned long priv = 1;
+	struct sbiret ret = sbi_ecall(SBI_EXT_HSM, SBI_EXT_HSM_HART_START,
+		hartid, start_addr, priv, 0, 0, 0);
+	return ret.error;
 }
+
+static inline int riscv_hart_status(unsigned long hartid)
+{
+	struct sbiret ret = sbi_ecall(SBI_EXT_HSM, SBI_EXT_HSM_HART_STATUS,
+		hartid, 0, 0, 0, 0, 0);
+	return ret.value;
+}
+
+static void send_cliten_ipi_riscv(const uint32_t hart_id)
+{
+#ifdef MILKVDUO
+	//only support for CPU2 C906L
+	cmdqu_t cmd_communicate;
+	cmd_communicate.ip_id = 0;
+	cmd_communicate.cmd_id = CMDQU_MCS_COMMUNICATE;
+	cmd_communicate.block = 0;
+	cmd_communicate.resv.mstime = 0;
+	cmd_communicate.param_ptr = 0;
+	rtos_cmdqu_send(&cmd_communicate);
+#else
+	sbi_send_ipi(hart_id);
+#endif
+}
+#endif
+
+#ifdef MILKVDUO
+static int mcs_rtos_callback(cmdqu_t* cmdq, void* data)
+{
+    (void)cmdq;
+    (void)data;
+    BUG_ON(cmdq == NULL);
+    BUG_ON(data != NULL);
+    BUG_ON(cmdq->cmd_id != CMDQU_MCS_COMMUNICATE);
+    pr_info("received ipi from client os\n");
+    atomic_set(&irq_ack, 1);
+    wake_up_interruptible(&mcs_wait_queue);
+    return 0;
+}
+
+static int __private_boot_cpu(struct cpu_info* cpu)
+{
+    uint8_t pakcage_id;
+    int ret;
+    cmdqu_t cmd_boot;
+
+    get_random_bytes(&pakcage_id, 1);
+    cmd_boot.ip_id = pakcage_id;
+    cmd_boot.cmd_id = CMDQU_MCS_BOOT;
+    cmd_boot.block = 0;
+    cmd_boot.resv.mstime = 0;
+    cmd_boot.param_ptr = (uint32_t)((cpu->boot_addr) & 0xffffffff);
+    ret = rtos_cmdqu_send(&cmd_boot);
+    if(ret)
+        return ret;
+    cmd_boot.ip_id = pakcage_id + 1;
+    cmd_boot.cmd_id = CMDQU_MCS_BOOT;
+    cmd_boot.block = 0;
+    
+    cmd_boot.resv.mstime = 0;
+    cmd_boot.param_ptr = (uint32_t)(((cpu->boot_addr) & 0xffffffff00000000) >> 32);
+    ret = rtos_cmdqu_send(&cmd_boot);
+    if(ret)
+        return ret;
+    return 0;
+}
+#else
 
 static void enable_mcs_ipi(void *data)
 {
@@ -223,15 +297,34 @@ static void disable_mcs_ipi(void *data)
 	disable_percpu_irq(IPI_MCS);
 }
 
+static irqreturn_t handle_clientos_ipi(int irq, void *data)
+{
+	pr_info("received ipi from client os\n");
+	atomic_set(&irq_ack, 1);
+	wake_up_interruptible(&mcs_wait_queue);
+	return IRQ_HANDLED;
+}
+#endif
+
 static void remove_mcs_ipi(void)
 {
+#ifdef MILKVDUO
+	request_cmdqu_irq(CMDQU_MCS_COMMUNICATE, NULL, NULL);
+	return;
+#else
 	on_each_cpu(disable_mcs_ipi, NULL, 1);
 	free_percpu_irq(IPI_MCS, mcs_evt);
 	free_percpu(mcs_evt);
+#endif
 }
 
 static int init_mcs_ipi(void)
 {
+#ifdef MILKVDUO
+	int err;
+	err = request_cmdqu_irq(CMDQU_MCS_COMMUNICATE, mcs_rtos_callback, NULL);
+	return err;
+#else
 	int err;
 	struct irq_desc *desc;
 
@@ -258,11 +351,7 @@ static int init_mcs_ipi(void)
 
 	on_each_cpu(enable_mcs_ipi, NULL, 1);
 	return 0;
-}
-
-static void send_clientos_ipi(const struct cpumask *target)
-{
-	ipi_send_mask(IPI_MCS, target);
+#endif
 }
 
 static unsigned int mcs_poll(struct file *file, poll_table *wait)
@@ -275,24 +364,6 @@ static unsigned int mcs_poll(struct file *file, poll_table *wait)
 
 	return mask;
 }
-
-
-#ifdef __riscv
-static inline int riscv_hart_start(unsigned long hartid, unsigned long start_addr)
-{
-	unsigned long priv = 0;
-	struct sbiret ret = sbi_ecall(SBI_EXT_HSM, SBI_EXT_HSM_HART_START,
-		hartid, start_addr, priv, 0, 0, 0);
-	return ret.error;
-}
-
-static inline int riscv_hart_status(unsigned long hartid)
-{
-	struct sbiret ret = sbi_ecall(SBI_EXT_HSM, SBI_EXT_HSM_HART_STATUS,
-		hartid, 0, 0, 0, 0, 0);
-	return ret.value;
-}
-#endif
 
 static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 {
@@ -311,96 +382,112 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 		return -EINVAL;
 
 	switch (cmd) {
-	case IOC_GET_COPY_MSG_MEM:
-		ret = copy_from_user(&copy_mem_info, (struct core_msg_mem_info __user *)arg, sizeof(copy_mem_info));
-		break;
-	case IOC_QUERY_MEM:
-		break;
-	default:
-		ret = copy_from_user(&info, (struct cpu_info __user *)arg, sizeof(info));
-		break;
+		case IOC_GET_COPY_MSG_MEM:
+			ret = copy_from_user(&copy_mem_info, (struct core_msg_mem_info __user *)arg, sizeof(copy_mem_info));
+			break;
+		case IOC_QUERY_MEM:
+			break;
+		default:
+			ret = copy_from_user(&info, (struct cpu_info __user *)arg, sizeof(info));
+			break;
 	}
+
 	if (ret)
 		return -EFAULT;
 
 	switch (cmd) {
-	case IOC_SENDIPI:
-		pr_info("received ioctl cmd to send ipi to cpu(%d)\n", info.cpu);
-		send_clientos_ipi(cpumask_of(info.cpu));
-		break;
-
-	case IOC_CPUON:
+		case IOC_SENDIPI:
+			pr_info("received ioctl cmd to send ipi to cpu(%d)\n", info.cpu);
 #ifdef __riscv
-		hart_id = info.cpu;
-		if (hart_id == INVALID_HARTID){
+			send_cliten_ipi_riscv(info.cpu);
 #else
-		mpidr = get_cpu_mpidr(info.cpu);
-		if (mpidr == INVALID_HWID
+			send_clientos_ipi(cpumask_of(info.cpu));
 #endif
-			pr_err("boot clientos failed, invalid MPIDR\n");
-			return -EINVAL;
-		}
+			break;
+
+		case IOC_CPUON:
+#ifdef __riscv
+#ifdef MILKVDUO
+			if(info.cpu != 2){
+#else
+			hart_id = info.cpu;
+			if (hart_id == INVALID_HARTID){
+#endif
+#else
+			mpidr = get_cpu_mpidr(info.cpu);
+			if (mpidr == INVALID_HWID){
+#endif
+				pr_err("boot clientos failed, invalid MPIDR\n");
+				return -EINVAL;
+			}
+#ifdef __riscv
+#ifdef MILKVDUO
+			pr_info("start booting clientos on cpu%d(%llx)\n", info.cpu, info.boot_addr);
+			ret = __private_boot_cpu(&info);
+			if(ret)
+				return ret;
+#else
+			pr_info("start booting clientos on cpu%d(%llx) addr(0x%llx)\n", info.cpu, hart_id, info.boot_addr);
+			ret = riscv_hart_start(hart_id, info.boot_addr);
+#endif
+#else
+			pr_info("start booting clientos on cpu%d(%llx) addr(0x%llx)\n", info.cpu, mpidr, info.boot_addr);
+			ret = invoke_psci_fn(CPU_ON_FUNCID, mpidr, info.boot_addr, 0);
+#endif
+			if (ret) {
+				pr_err("boot clientos failed(%d)\n", ret);
+				return -EINVAL;
+			}
+			break;
+		case IOC_AFFINITY_INFO:
+#ifdef __riscv
+			hart_id = info.cpu;
+			if (hart_id == INVALID_HARTID){
+#else
+			mpidr = get_cpu_mpidr(info.cpu);
+			if (mpidr == INVALID_HWID) {
+#endif
+				pr_err("cpu state check failed! Invalid MPIDR\n");
+				return -EINVAL;
+			}
 
 #ifdef __riscv
-		pr_info("start booting clientos on cpu%d(%llx) addr(0x%llx)\n", info.cpu, hart_id, info.boot_addr);
-		ret = riscv_hart_start(hart_id, info.boot_addr);
+			ret = riscv_hart_status(hart_id);
 #else
-		pr_info("start booting clientos on cpu%d(%llx) addr(0x%llx)\n", info.cpu, mpidr, info.boot_addr);
-		ret = invoke_psci_fn(CPU_ON_FUNCID, mpidr, info.boot_addr, 0);
+			ret = invoke_psci_fn(AFFINITY_INFO_FUNCID, mpidr, 0, 0);
 #endif
-		if (ret) {
-			pr_err("boot clientos failed(%d)\n", ret);
+			if (ret != 1) {
+				pr_err("cpu state check failed! cpu(%d) is not in the OFF state, current state: %d\n",
+					info.cpu, ret);
+				return -EFAULT;
+			}
+			break;
+
+		case IOC_QUERY_MEM:
+			if (copy_to_user((void __user *)arg, &mem[0], sizeof(mem[0])))
+				return -EFAULT;
+			break;
+
+		case IOC_GET_COPY_MSG_MEM:
+				if (copy_mem_info.instance_id > RPROC_MEM_MAX) {
+													pr_err("GET_COPY_MSG_MEM failed: The required instance_id max to %d, your instance_id:%d\n",
+															RPROC_MEM_MAX, copy_mem_info.instance_id);
+													return -EINVAL;
+					}
+			/* 使用2M。 1M 用来发送， 1M用来接收 尾部1M gap */
+			copy_mem_info.phy_addr = mem[0].phy_addr + copy_mem_info.instance_id * INSTANCE_SIZE + OPENAMP_SHM_SIZE - OPENAMP_SHM_COPY_SIZE * 3;
+				if (copy_mem_info.phy_addr  > (mem[0].phy_addr + mem[0].size)) {
+				pr_err("GET_COPY_MSG_MEM failed: The required memory is out of mcs reserved memory, instance_id:%d\n", copy_mem_info.instance_id);
+				return -EINVAL;
+			}
+			copy_mem_info.size = OPENAMP_SHM_COPY_SIZE * 2;  /* 使用2M。1M 用来发送， 1M用来接收 */
+			if (copy_to_user((void __user *)arg, &copy_mem_info, sizeof(copy_mem_info)))
+				return -EFAULT;
+			break;
+
+		default:
+			pr_err("IOC param invalid(0x%x)\n", cmd);
 			return -EINVAL;
-		}
-		break;
-
-	case IOC_AFFINITY_INFO:
-#ifdef __riscv
-		hart_id = info.cpu;
-		if (hart_id == INVALID_HARTID){
-#else
-		mpidr = get_cpu_mpidr(info.cpu);
-		if (mpidr == INVALID_HWID) {
-#endif
-			pr_err("cpu state check failed! Invalid MPIDR\n");
-			return -EINVAL;
-		}
-
-#ifdef __riscv
-		ret = riscv_hart_status(hart_id);
-#else
-		ret = invoke_psci_fn(AFFINITY_INFO_FUNCID, mpidr, 0, 0);
-#endif
-		if (ret != 1) {
-			pr_err("cpu state check failed! cpu(%d) is not in the OFF state, current state: %d\n",
-				info.cpu, ret);
-			return -EFAULT;
-		}
-		break;
-
-	case IOC_QUERY_MEM:
-		if (copy_to_user((void __user *)arg, &mem[0], sizeof(mem[0])))
-			return -EFAULT;
-		break;
-
-	case IOC_GET_COPY_MSG_MEM:
-	    if (copy_mem_info.instance_id > RPROC_MEM_MAX) {
-                        pr_err("GET_COPY_MSG_MEM failed: The required instance_id max to %d, your instance_id:%d\n", RPROC_MEM_MAX, copy_mem_info.instance_id);
-                        return -EINVAL;
-        }
-		copy_mem_info.phy_addr = mem[0].phy_addr + copy_mem_info.instance_id * INSTANCE_SIZE + OPENAMP_SHM_SIZE - OPENAMP_SHM_COPY_SIZE * 3;  /* 使用2M。 1M 用来发送， 1M用来接收 尾部1M gap */
-	    if (copy_mem_info.phy_addr  > (mem[0].phy_addr + mem[0].size)) {
-			pr_err("GET_COPY_MSG_MEM failed: The required memory is out of mcs reserved memory, instance_id:%d\n", copy_mem_info.instance_id);
-			return -EINVAL;
-		}
-		copy_mem_info.size = OPENAMP_SHM_COPY_SIZE * 2;  /* 使用2M。1M 用来发送， 1M用来接收 */
-		if (copy_to_user((void __user *)arg, &copy_mem_info, sizeof(copy_mem_info)))
-			return -EFAULT;
-		break;
-
-	default:
-		pr_err("IOC param invalid(0x%x)\n", cmd);
-		return -EINVAL;
 	}
 	return 0;
 }
@@ -437,6 +524,7 @@ static int mcs_mmap(struct file *file, struct vm_area_struct *vma)
 	/* It's illegal to wrap around the end of the physical address space. */
 	if (offset + (phys_addr_t)size - 1 < offset)
 		return -EINVAL;
+
 
 	for (i = 0; (i < RPROC_MEM_MAX) && (mem[i].phy_addr != 0); i++) {
 		if (offset >= mem[i].phy_addr && size <= mem[i].size) {
@@ -504,7 +592,6 @@ static int init_reserved_mem(void)
 
 	count = of_count_phandle_with_args(np, "memory-region", NULL);
 	if (count <= 0) {
-		pr_err("reserved mem is required for MCS\n");
 		return -ENODEV;
 	}
 
