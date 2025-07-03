@@ -207,13 +207,13 @@ static int check_create_msg(struct create_msg msg, int msg_fd)
 	}
 
 #ifndef MILKVDUO
-	if (msg.cpu < 0 || msg.cpu >= sysconf(_SC_NPROCESSORS_CONF)) {
-		syslog(LOG_ERR, "Invalid CPUID: %d, out of range(0-%ld)",
-			msg.cpu, sysconf(_SC_NPROCESSORS_CONF) - 1);
-		send_log(msg_fd, "Invalid CPUID: %d, out of range(0-%ld)",
-			msg.cpu, sysconf(_SC_NPROCESSORS_CONF) - 1);
-		return -EINVAL;
-	}
+	/**if (msg.cpu < 0 || msg.cpu >= sysconf(_SC_NPROCESSORS_CONF)) {*/
+	/**  syslog(LOG_ERR, "Invalid CPUID: %d, out of range(0-%ld)",*/
+	/**    msg.cpu, sysconf(_SC_NPROCESSORS_CONF) - 1);*/
+	/**  send_log(msg_fd, "Invalid CPUID: %d, out of range(0-%ld)",*/
+	/**    msg.cpu, sysconf(_SC_NPROCESSORS_CONF) - 1);*/
+	/**  return -EINVAL;*/
+	/**}*/
 #else 
 	// cpu2 for C906L cpu0 for 8051
 	if (!(msg.cpu == 2 || msg.cpu == 0)) {

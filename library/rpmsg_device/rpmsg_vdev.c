@@ -146,14 +146,16 @@ err1:
 void release_rpmsg_device(struct mica_client *client)
 {
 	struct rpmsg_virtio_device *rpmsg_vdev;
+	struct virtio_device *vdev;
 
 	if (!client->rdev)
 		return;
 
 	rpmsg_vdev = metal_container_of(client->rdev, struct rpmsg_virtio_device, rdev);
+	vdev = rpmsg_vdev->vdev;
 
 	/* destroy all epts */
 	rpmsg_deinit_vdev(rpmsg_vdev);
 
-	remoteproc_remove_virtio(&client->rproc, rpmsg_vdev->vdev);
+	remoteproc_remove_virtio(&client->rproc, vdev);
 }
