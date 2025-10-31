@@ -49,6 +49,7 @@ static int __percpu *mcs_evt;
 
 struct cpu_info {
 	u32 cpu;
+	u32 ipi_info;
 	u64 boot_addr;
 };
 
@@ -242,7 +243,11 @@ static long mcs_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
 	switch (cmd) {
 	case IOC_SENDIPI:
 		pr_info("received ioctl cmd to send ipi to cpu(%d)\n", info.cpu);
-		send_clientos_ipi(cpumask_of(info.cpu));
+		if(info.ipi_info = 1){
+			spacemit_rproc_shut_down();
+		}else{
+			send_clientos_ipi(cpumask_of(info.cpu));
+		}
 		break;
 
 	case IOC_CPUON:

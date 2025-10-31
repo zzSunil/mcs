@@ -24,6 +24,7 @@
 
 struct cpu_info {
 	uint32_t cpu;
+	uint32_t ipi_info;
 	uint64_t boot_addr;
 };
 
@@ -361,6 +362,7 @@ static int rproc_start(struct remoteproc *rproc)
 	struct resource_table *rsc_table = rproc->rsc_table;
 	struct cpu_info info = {
 		.cpu = client->cpu_id,
+		.ipi_info = 0,
 		.boot_addr = rproc->bootaddr
 	};
 
@@ -386,7 +388,7 @@ static int rproc_shutdown(struct remoteproc *rproc)
 
 	/* Tell clientos shut itself down by PSCI */
 	set_cpu_status((struct resource_table *)rsc_table, CPU_OFF_FUNCID);
-	rproc->ops->notify(rproc, 0);
+	rproc->ops->notify(rproc, 1);
 
 	/* Delete all the registered remoteproc memories */
 	metal_list_for_each(&rproc->mems, node) {
@@ -436,9 +438,9 @@ static int rproc_notify(struct remoteproc *rproc, uint32_t id)
 	struct mica_client *client = metal_container_of(rproc, struct mica_client, rproc);
 	struct cpu_info info = {
 		.cpu = client->cpu_id,
+		.ipi_info = id,
 	};
 
-	(void)id;
 	ret = ioctl(mcs_fd, IOC_SENDIPI, &info);
 	if (ret < 0) {
 		syslog(LOG_ERR, "send ipi to CPU%d failed, err: %d\n", info.cpu, ret);
