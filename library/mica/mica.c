@@ -39,15 +39,15 @@ int mica_start(struct mica_client *client)
 		return ret;
 	}
 
-	ret = create_rpmsg_device(client);
-	if (ret)
-		syslog(LOG_ERR, "create rpmsg device failed, err: %d\n", ret);
+	// ret = create_rpmsg_device(client);
+	// if (ret)
+	// 	syslog(LOG_ERR, "create rpmsg device failed, err: %d\n", ret);
 
-	if (client->debug) {
-		ret = create_rbuf_device(client);
-		if (ret)
-			syslog(LOG_ERR, "create rbuf device failed, err: %d\n", ret);
-	}
+	// if (client->debug) {
+	// 	ret = create_rbuf_device(client);
+	// 	if (ret)
+	// 		syslog(LOG_ERR, "create rbuf device failed, err: %d\n", ret);
+	// }
 
 	return ret;
 }
