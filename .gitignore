@@ -8,3 +8,4 @@
 *.ko
 *.cmd
 *.vscode
+build/
