@@ -1,0 +1,82 @@
+From 88ea55a21f69597b24cc43d794f454d9c179eb33 Mon Sep 17 00:00:00 2001
+From: Zheng Zhang <zhangzheng@iscas.ac.cn>
+Date: Mon, 24 Nov 2025 17:57:42 +0800
+Subject: [PATCH] mcs device tree
+
+---
+ .../boot/dts/spacemit/k1-bananapi-f3.dts      |  5 ++++
+ arch/riscv/boot/dts/spacemit/k1-x.dtsi        | 27 +++++++++++++++++++
+ .../riscv/boot/dts/spacemit/k1-x_pinctrl.dtsi |  7 +++++
+ 3 files changed, 39 insertions(+)
+
+diff --git a/arch/riscv/boot/dts/spacemit/k1-bananapi-f3.dts b/arch/riscv/boot/dts/spacemit/k1-bananapi-f3.dts
+index 16f7a19f701f..188c6726dc0b 100644
+--- a/arch/riscv/boot/dts/spacemit/k1-bananapi-f3.dts
++++ b/arch/riscv/boot/dts/spacemit/k1-bananapi-f3.dts
+@@ -446,3 +446,8 @@ rgmii1: phy@1 {
+ 		};
+ 	};
+ };
++
++&mcs {
++	pinctrl-names = "default";
++	pinctrl-0 = <&pinctrl_rcpu>;
++};
+diff --git a/arch/riscv/boot/dts/spacemit/k1-x.dtsi b/arch/riscv/boot/dts/spacemit/k1-x.dtsi
+index a0cf55837bca..587a2e578d3e 100644
+--- a/arch/riscv/boot/dts/spacemit/k1-x.dtsi
++++ b/arch/riscv/boot/dts/spacemit/k1-x.dtsi
+@@ -408,6 +408,33 @@ pll_clk_cluster1: clock-pll_clk_cluster1 {
+ 		};
+ 	};
+ 
++	reserved-memory {
++		#address-cells = <0x02>;
++		#size-cells = <0x02>;
++		ranges;
++
++		client_os_reserved@30500000 {
++			reg = <0x00 0x30500000 0x00 0x100000>;
++			no-map;
++			phandle = <0x32>;
++		};
++
++		client_os-dma-memory@30600000 {
++			compatible = "shared-dma-pool";
++			reg = <0x00 0x30600000 0x00 0x100000>;
++			no-map;
++			phandle = <0x31>;
++		};
++	};
++
++	mcs: mcs-remoteproc {
++		compatible = "oe,mcs_remoteproc";
++		memory-region = <0x31 0x32>;
++		resets = <&reset RESET_AUDIO_SYS>;
++		reset-names = "core_reset";
++		status = "okay";
++	};
++
+ 	soc: soc {
+ 		compatible = "simple-bus";
+ 		#address-cells = <2>;
+diff --git a/arch/riscv/boot/dts/spacemit/k1-x_pinctrl.dtsi b/arch/riscv/boot/dts/spacemit/k1-x_pinctrl.dtsi
+index 46b826f6b681..5af2eb7b9c1a 100644
+--- a/arch/riscv/boot/dts/spacemit/k1-x_pinctrl.dtsi
++++ b/arch/riscv/boot/dts/spacemit/k1-x_pinctrl.dtsi
+@@ -1188,5 +1188,12 @@ K1X_PADCONF(PRI_TCK, MUX_MODE0, (EDGE_NONE | PULL_UP | PAD_1V8_DS2))
+ 			K1X_PADCONF(PRI_TDO, MUX_MODE0, (EDGE_NONE | PULL_UP | PAD_1V8_DS2))
+ 		>;
+ 	};
++
++	pinctrl_rcpu: pinctrl_rcpu_grp {
++		pinctrl-single,pins = <
++			K1X_PADCONF(GPIO_47, MUX_MODE1, (EDGE_NONE | PULL_UP | PAD_3V_DS4))	/* r_uart0_tx 1100 0100 0100 0000 0xc440 */
++			K1X_PADCONF(GPIO_48, MUX_MODE1, (EDGE_NONE | PULL_UP | PAD_3V_DS4))	/* r_uart0_rx */
++		>;
++	};
+ };
+ 
+-- 
+2.51.1
+
